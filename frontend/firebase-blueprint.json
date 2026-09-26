@@ -1,0 +1,39 @@
+{
+  "entities": {
+    "users": {
+      "title": "User Profiles",
+      "description": "Registered users with roles (user or admin)",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "role": { "type": "string", "enum": ["user", "admin"] },
+        "isAdminAuthorized": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "lastLoginAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "email", "role"]
+    },
+    "documents": {
+      "title": "Imported Documents",
+      "description": "Documents uploaded or imported by users for customer service processing",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "size": { "type": "number" },
+        "type": { "type": "string" },
+        "lastModified": { "type": "number" },
+        "importedAt": { "type": "string" },
+        "importedBy": { "type": "string" },
+        "userId": { "type": "string" },
+        "userEmail": { "type": "string" },
+        "status": { "type": "string", "enum": ["ready", "processing", "completed", "queued"] },
+        "category": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "userId", "userEmail", "status"]
+    }
+  }
+}

@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: acs-backend
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      - NODE_ENV=production
+      - PORT=5000
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_USER=acs
+      - MYSQL_PASSWORD=acs_password
+      - MYSQL_DATABASE=acs_customer_service
+      - JWT_ACCESS_SECRET=super_secure_jwt_access_secret_for_docker_testing_12345
+      - JWT_ACCESS_EXPIRES_IN=15m
+      - JWT_REFRESH_SECRET=super_secure_jwt_refresh_secret_for_docker_testing_67890
+      - JWT_REFRESH_EXPIRES_IN=7d
+      - AWS_REGION=ap-south-1
+      - AWS_S3_BUCKET_NAME=acs-customer-documents-prod
+      - FRONTEND_URL=https://acs-customer-service-centre-1.vercel.app
+      - COOKIE_SECRET=docker_cookie_signing_secret_998877
+      - MAX_FILE_SIZE_MB=25
+      - LOG_LEVEL=info
+    networks:
+      - acs-network
+
+  mysql:
+    image: mysql:8.4
+    container_name: acs-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: acs_customer_service
+      MYSQL_USER: acs
+      MYSQL_PASSWORD: acs_password
+      MYSQL_ROOT_PASSWORD: root_password
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    networks:
+      - acs-network
+
+networks:
+  acs-network:
+    driver: bridge
+
+volumes:
+  mysql-data:

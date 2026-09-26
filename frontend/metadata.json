@@ -1,0 +1,6 @@
+{
+  "name": "ACS Customer Service Centre",
+  "description": "A modern, professional Customer Service Centre and Cyber Cafe portal featuring Google authentication, ping file import interface, and digital document services.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
