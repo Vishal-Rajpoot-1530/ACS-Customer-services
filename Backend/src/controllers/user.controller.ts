@@ -4,6 +4,15 @@ import { sendSuccess } from '../utils/response';
 import { ExplorerStateInput } from '../types/explorer.types';
 
 export class UserController {
+  async getShareDirectory(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const users = await userService.getShareDirectory(req.user!.userId);
+      sendSuccess(res, 'Registered users retrieved successfully', { users });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async getExplorer(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const explorer = await userService.getExplorer(req.user!.userId);

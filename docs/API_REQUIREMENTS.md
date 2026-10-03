@@ -60,6 +60,7 @@
 
 | Endpoint | Method | Access | Description |
 | :--- | :--- | :--- | :--- |
+| `/api/v1/users/share-directory` | `GET` | Authenticated | List registered users' IDs, names, emails, and roles for document sharing (excluding the current user). |
 | `/api/v1/users/profile` | `PATCH` | Authenticated | Update current user's profile information (displayName, photoURL). |
 
 ---
@@ -70,8 +71,13 @@
 | :--- | :--- | :--- | :--- |
 | `/api/v1/documents` | `POST` | Authenticated / Public Guest | Upload a new document with multipart file & metadata. |
 | `/api/v1/documents` | `GET` | Authenticated | List user's documents with pagination, status filter, and search. |
+| `/api/v1/documents/shared` | `GET` | Authenticated | List documents shared with the current user. |
+| `/api/v1/documents/shared-by-me` | `GET` | Authenticated | List documents shared by the current user, including recipient details. |
+| `/api/v1/documents/:id/shares` | `POST` | Owner / Admin | Share a document with a registered user by email. |
+| `/api/v1/documents/:id/shares/all` | `POST` | Owner / Admin | Share with all eligible registered accounts, including admins; excludes the sender and file owner. |
+| `/api/v1/documents/:id/shares/:recipientId` | `DELETE` | Owner / Admin | Revoke a user's access to a shared document. |
 | `/api/v1/documents/:id` | `GET` | Authenticated | Get metadata for a specific document. |
-| `/api/v1/documents/:id/download` | `GET` | Authenticated | Generate a short-lived (300s) presigned S3 download/view URL. |
+| `/api/v1/documents/:id/download` | `GET` | Owner / Shared recipient / Admin | Generate a short-lived (300s) presigned S3 download/view URL. |
 | `/api/v1/documents/:id` | `DELETE` | Authenticated | Delete document from S3 and MongoDB. |
 
 ---

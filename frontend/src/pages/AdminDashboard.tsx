@@ -31,8 +31,9 @@ import {
   Music,
   Volume2,
   UserX,
-  AlertTriangle
-  , Folder
+  AlertTriangle,
+  Folder,
+  Share2,
 } from 'lucide-react';
 import { ImportedDocument } from '../types';
 import { useNavigate } from 'react-router-dom';
@@ -40,7 +41,7 @@ import { RealDocumentViewerModal } from '../components/RealDocumentViewerModal';
 import { AdminEditDocModal } from '../components/AdminEditDocModal';
 import { saveMediaBlob, deleteMediaBlob, getMediaBlobUrl, linkMediaBlob } from '../utils/mediaStorage';
 import { adminApi, AdminUserDto } from '../api/admin.api';
-import { documentApi } from '../api/document.api';
+import { BackendDocumentDto, documentApi, ShareDirectoryUserDto, SharedByMeDto } from '../api/document.api';
 import { FileExplorerSidebar, ExplorerFolder } from '../components/FileExplorerSidebar';
 
 type DocTypeFilter = 'all' | 'pdf' | 'images' | 'videos' | 'audio' | 'doc';
@@ -93,6 +94,17 @@ export const AdminDashboard: React.FC = () => {
   const [loadingDocs, setLoadingDocs] = useState<boolean>(true);
   const [isUploading, setIsUploading] = useState<boolean>(false);
   const [adminNotice, setAdminNotice] = useState<string | null>(null);
+  const [shareTarget, setShareTarget] = useState<ImportedDocument | null>(null);
+  const [shareDirectory, setShareDirectory] = useState<ShareDirectoryUserDto[]>([]);
+  const [selectedShareUser, setSelectedShareUser] = useState<ShareDirectoryUserDto | null>(null);
+  const [shareWithEveryone, setShareWithEveryone] = useState(false);
+  const [shareSearch, setShareSearch] = useState('');
+  const [loadingShareDirectory, setLoadingShareDirectory] = useState(false);
+  const [shareDirectoryError, setShareDirectoryError] = useState<string | null>(null);
+  const [isSharing, setIsSharing] = useState(false);
+  const [sharedWithMe, setSharedWithMe] = useState<ImportedDocument[]>([]);
+  const [sharedByMe, setSharedByMe] = useState<SharedByMeDto[]>([]);
+  const [sharedFilesView, setSharedFilesView] = useState<'mine' | 'received' | 'sent'>('mine');
 
   // Selected document for Detail Modal
   const [selectedDoc, setSelectedDoc] = useState<ImportedDocument | null>(null);
@@ -239,13 +251,48 @@ export const AdminDashboard: React.FC = () => {
     }
   };
 
+  const mapBackendDocument = (document: BackendDocumentDto): ImportedDocument => ({
+    id: document.id,
+    name: document.originalName,
+    size: document.size,
+    type: document.mimeType,
+    lastModified: new Date(document.createdAt).getTime(),
+    importedAt: document.importedAt || new Date(document.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    importedBy: document.importedBy || 'ACS Member',
+    userId: document.userId,
+    userEmail: document.userEmail || '',
+    status: document.status,
+    notes: document.notes || '',
+    category: document.category,
+    createdAt: document.createdAt,
+    s3Key: document.s3Key,
+    sharedByName: document.sharedByName,
+    sharedByEmail: document.sharedByEmail,
+  });
+
+  const fetchShareLists = async () => {
+    try {
+      const [received, sent] = await Promise.all([
+        documentApi.listShared(),
+        documentApi.listSharedByMe(),
+      ]);
+      setSharedWithMe(received.map(mapBackendDocument));
+      setSharedByMe(sent);
+    } catch (err: any) {
+      console.error('Backend shared documents list failed:', err);
+      setAdminNotice(err?.message || 'Unable to load shared documents.');
+    }
+  };
+
   useEffect(() => {
     fetchAdminQueue();
     fetchAdminUsers();
+    fetchShareLists();
 
     // Also listen for document updates from Navbar universal upload
     const handleGlobalUpdate = () => {
       fetchAdminQueue();
+      fetchShareLists();
     };
     window.addEventListener('acs_documents_updated', handleGlobalUpdate);
 
@@ -600,6 +647,65 @@ export const AdminDashboard: React.FC = () => {
     setTimeout(() => setAdminNotice(null), 3500);
   };
 
+  const openShareDialog = async (docItem: ImportedDocument) => {
+    setShareTarget(docItem);
+    setSelectedShareUser(null);
+    setShareWithEveryone(false);
+    setShareSearch('');
+    setShareDirectoryError(null);
+    setLoadingShareDirectory(true);
+    try {
+      const users = await documentApi.listShareDirectory();
+      setShareDirectory(users.filter((shareUser) => shareUser.id !== docItem.userId));
+    } catch (error: any) {
+      setShareDirectoryError(error?.message || 'Unable to load registered users.');
+      setShareDirectory([]);
+    } finally {
+      setLoadingShareDirectory(false);
+    }
+  };
+
+  const handleShareDocument = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!shareTarget || (!selectedShareUser && !shareWithEveryone)) return;
+
+    setIsSharing(true);
+    try {
+      if (shareWithEveryone) {
+        const result = await documentApi.shareWithAll(shareTarget.id);
+        setAdminNotice(result.sharedCount
+          ? `Shared "${shareTarget.name}" with ${result.sharedCount} registered user(s), including admins.`
+          : `"${shareTarget.name}" is already shared with all eligible users.`);
+      } else if (selectedShareUser) {
+        const result = await documentApi.share(shareTarget.id, selectedShareUser.email);
+        setAdminNotice(`Shared "${shareTarget.name}" with ${result.recipientEmail}.`);
+      }
+      await fetchShareLists();
+      setShareTarget(null);
+      setSelectedShareUser(null);
+      setShareWithEveryone(false);
+      setShareSearch('');
+    } catch (error: any) {
+      setAdminNotice(error?.message || 'Unable to share this file.');
+    } finally {
+      setIsSharing(false);
+    }
+  };
+
+  const handleRevokeShare = async (share: SharedByMeDto) => {
+    try {
+      await documentApi.revokeShare(share.document.id, share.recipientId);
+      setAdminNotice(`Access to "${share.document.originalName}" revoked for ${share.recipientEmail}.`);
+      await fetchShareLists();
+    } catch (error: any) {
+      setAdminNotice(error?.message || 'Unable to revoke shared access.');
+    }
+  };
+
+  const filteredShareDirectory = shareDirectory.filter((shareUser) =>
+    `${shareUser.displayName} ${shareUser.email}`.toLowerCase().includes(shareSearch.trim().toLowerCase())
+  );
+
   // Trigger file selection for Admin
   const handleTriggerFileSelect = () => {
     if (selectedFolderId) {
@@ -921,6 +1027,60 @@ export const AdminDashboard: React.FC = () => {
             </div>
           )}
 
+          <div className="mb-4 flex gap-1 overflow-x-auto border-b border-slate-200" role="tablist" aria-label="Admin file views">
+            <button type="button" role="tab" aria-selected={sharedFilesView === 'mine'} onClick={() => setSharedFilesView('mine')} className={`shrink-0 border-b-2 px-3 py-2 text-xs font-bold ${sharedFilesView === 'mine' ? 'border-[#0055ff] text-[#0055ff]' : 'border-transparent text-slate-500 hover:text-slate-800'}`}>
+              My files <span className="ml-1 text-[10px]">{documents.filter(isDocUploadedByAdmin).length}</span>
+            </button>
+            <button type="button" role="tab" aria-selected={sharedFilesView === 'received'} onClick={() => setSharedFilesView('received')} className={`shrink-0 border-b-2 px-3 py-2 text-xs font-bold ${sharedFilesView === 'received' ? 'border-emerald-600 text-emerald-700' : 'border-transparent text-slate-500 hover:text-slate-800'}`}>
+              Shared with me <span className="ml-1 text-[10px]">{sharedWithMe.length}</span>
+            </button>
+            <button type="button" role="tab" aria-selected={sharedFilesView === 'sent'} onClick={() => setSharedFilesView('sent')} className={`shrink-0 border-b-2 px-3 py-2 text-xs font-bold ${sharedFilesView === 'sent' ? 'border-orange-600 text-orange-700' : 'border-transparent text-slate-500 hover:text-slate-800'}`}>
+              Shared by me <span className="ml-1 text-[10px]">{sharedByMe.length}</span>
+            </button>
+          </div>
+
+          {sharedFilesView === 'sent' ? (
+            <section className="mb-6 overflow-hidden rounded-2xl border border-slate-200 bg-white" aria-label="Files shared by me">
+              <div className="border-b border-slate-100 bg-slate-50/60 px-4 py-4">
+                <h2 className="text-sm font-extrabold text-[#04193d]">Shared by me <span className="ml-1 text-xs text-slate-400">{sharedByMe.length}</span></h2>
+              </div>
+              {sharedByMe.length ? (
+                <div className="divide-y divide-slate-100">
+                  {sharedByMe.map((share) => (
+                    <div key={`${share.document.id}-${share.recipientId}`} className="flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                      <button type="button" onClick={() => handleOpenDocDetails(mapBackendDocument(share.document))} className="min-w-0 text-left">
+                        <span className="block truncate text-xs font-bold text-[#04193d]">{share.document.originalName}</span>
+                        <span className="mt-0.5 block truncate text-[11px] text-slate-500">With: {share.recipientEmail}</span>
+                      </button>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <button type="button" onClick={() => void handleRevokeShare(share)} className="rounded-md border border-rose-200 px-2.5 py-1.5 text-[11px] font-bold text-rose-600 hover:bg-rose-50">Revoke</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : <p className="px-4 py-12 text-center text-xs text-slate-500">You have not shared any files yet.</p>}
+            </section>
+          ) : sharedFilesView === 'received' ? (
+            <section className="mb-6 overflow-hidden rounded-2xl border border-slate-200 bg-white" aria-label="Files shared with me">
+              <div className="border-b border-slate-100 bg-slate-50/60 px-4 py-4">
+                <h2 className="text-sm font-extrabold text-[#04193d]">Shared with me <span className="ml-1 text-xs text-slate-400">{sharedWithMe.length}</span></h2>
+              </div>
+              {sharedWithMe.length ? (
+                <div className="divide-y divide-slate-100">
+                  {sharedWithMe.map((sharedDocument) => (
+                    <div key={sharedDocument.id} className="flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                      <button type="button" onClick={() => handleOpenDocDetails(sharedDocument)} className="min-w-0 text-left">
+                        <span className="block truncate text-xs font-bold text-[#04193d]">{sharedDocument.name}</span>
+                        <span className="mt-0.5 block truncate text-[11px] text-slate-500">By: {sharedDocument.sharedByEmail || sharedDocument.userEmail}</span>
+                      </button>
+                      <span className="shrink-0 text-[10px] text-slate-400">{formatUploadDate(sharedDocument)}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : <p className="px-4 py-12 text-center text-xs text-slate-500">No files have been shared with you.</p>}
+            </section>
+          ) : (
+            <>
           {/* ================= RECENTLY UPLOADED DOCUMENTS SECTION ================= */}
           <div className="bg-white rounded-3xl border border-slate-200/80 shadow-xs overflow-hidden">
             <div className="p-4 sm:p-5 border-b border-slate-100 flex flex-col xl:flex-row xl:items-center justify-between gap-4 bg-slate-50/50">
@@ -1217,6 +1377,17 @@ export const AdminDashboard: React.FC = () => {
                           <Download className="w-4 h-4" />
                         </button>
 
+                        <button
+                          id={`admin-share-doc-${docItem.id}`}
+                          type="button"
+                          onClick={() => openShareDialog(docItem)}
+                          className="p-2 text-emerald-700 hover:text-white bg-emerald-50 hover:bg-emerald-600 rounded-xl border border-emerald-200 transition-colors cursor-pointer min-h-[34px] min-w-[34px] flex items-center justify-center"
+                          title="Share with a registered user"
+                          aria-label="Share document"
+                        >
+                          <Share2 className="w-4 h-4" />
+                        </button>
+
                         {/* Edit Document Button */}
                         <button
                           id={`edit-doc-${docItem.id}`}
@@ -1249,6 +1420,8 @@ export const AdminDashboard: React.FC = () => {
               </div>
             )}
           </div>
+            </>
+          )}
 
           {/* ================= USER LIST & DRILLDOWN EXPLORER MODAL =================
           Phase 1: Displays all registered & submitting users with file & video counts.
@@ -1743,6 +1916,19 @@ export const AdminDashboard: React.FC = () => {
                                   <Download className="w-4 h-4" />
                                 </button>
 
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    openShareDialog(docItem);
+                                  }}
+                                  className="p-2 rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-600 hover:text-white transition-colors cursor-pointer"
+                                  title="Share with a registered user"
+                                  aria-label="Share document"
+                                >
+                                  <Share2 className="w-4 h-4" />
+                                </button>
+
                                 {/* Delete Button */}
                                 <button
                                   onClick={(e) => {
@@ -1801,6 +1987,114 @@ export const AdminDashboard: React.FC = () => {
                   </>
                 )}
               </div>
+            </div>
+          )}
+
+          {shareTarget && (
+            <div
+              className="fixed inset-0 z-[150] flex items-center justify-center bg-slate-950/55 p-4 backdrop-blur-sm"
+              onClick={() => setShareTarget(null)}
+            >
+              <form
+                onSubmit={handleShareDocument}
+                onClick={(event) => event.stopPropagation()}
+                className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-5 shadow-2xl"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="admin-share-title"
+              >
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <h2 id="admin-share-title" className="text-base font-extrabold text-[#04193d]">Share file</h2>
+                    <p className="mt-1 break-all text-xs text-slate-500">{shareTarget.name}</p>
+                  </div>
+                  <button type="button" onClick={() => setShareTarget(null)} className="rounded-md p-1 text-slate-500 hover:bg-slate-100" aria-label="Close share dialog">
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+                <label htmlFor="admin-share-user-search" className="mt-5 block text-xs font-bold text-slate-700">Registered users</label>
+                <input
+                  id="admin-share-user-search"
+                  type="search"
+                  value={shareSearch}
+                  onChange={(event) => setShareSearch(event.target.value)}
+                  placeholder="Search by name or email"
+                  className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                />
+                <div className="mt-2 max-h-64 min-h-24 overflow-y-auto overscroll-contain rounded-lg border border-slate-200" role="listbox" aria-label="Registered users">
+                  {loadingShareDirectory ? (
+                    <div className="flex h-24 items-center justify-center gap-2 text-xs text-slate-500">
+                      <Loader2 className="h-4 w-4 animate-spin" /> Loading users...
+                    </div>
+                  ) : shareDirectoryError ? (
+                    <p className="p-4 text-center text-xs text-rose-600">{shareDirectoryError}</p>
+                  ) : (
+                    <>
+                      {shareDirectory.length > 0 && (
+                        <button
+                          type="button"
+                          role="option"
+                          aria-selected={shareWithEveryone}
+                          onClick={() => {
+                            setShareWithEveryone(true);
+                            setSelectedShareUser(null);
+                          }}
+                          className={`flex w-full items-center gap-3 border-b border-slate-200 px-3 py-3 text-left ${shareWithEveryone ? 'bg-emerald-50' : 'bg-slate-50/70 hover:bg-emerald-50/60'}`}
+                        >
+                          <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-bold ${shareWithEveryone ? 'bg-emerald-600 text-white' : 'bg-emerald-100 text-emerald-700'}`}>
+                            <Users className="h-4 w-4" />
+                          </span>
+                          <span className="min-w-0 flex-1">
+                            <span className="block text-xs font-extrabold text-slate-800">Share with everyone</span>
+                            <span className="block text-[11px] text-slate-500">{shareDirectory.length} registered users, including admins</span>
+                          </span>
+                          {shareWithEveryone && <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-700" />}
+                        </button>
+                      )}
+                      {filteredShareDirectory.length === 0 ? (
+                        <p className="p-4 text-center text-xs text-slate-500">
+                          {shareDirectory.length ? 'No users match your search.' : 'No other eligible users found.'}
+                        </p>
+                      ) : filteredShareDirectory.map((shareUser) => {
+                        const isSelected = selectedShareUser?.id === shareUser.id;
+                        return (
+                          <button
+                            key={shareUser.id}
+                            type="button"
+                            role="option"
+                            aria-selected={isSelected}
+                            onClick={() => {
+                              setSelectedShareUser(shareUser);
+                              setShareWithEveryone(false);
+                            }}
+                            className={`flex w-full items-center gap-3 border-b border-slate-100 px-3 py-2.5 text-left last:border-b-0 ${isSelected ? 'bg-blue-50' : 'hover:bg-slate-50'}`}
+                          >
+                            <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-bold ${isSelected ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600'}`}>
+                              {(shareUser.displayName || shareUser.email).slice(0, 1).toUpperCase()}
+                            </span>
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate text-xs font-bold text-slate-800">{shareUser.displayName}</span>
+                              <span className="flex items-center gap-1.5">
+                                <span className="block truncate text-[11px] text-slate-500">{shareUser.email}</span>
+                                {shareUser.role === 'ADMIN' && <span className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[9px] font-extrabold uppercase text-amber-800">Admin</span>}
+                              </span>
+                            </span>
+                            {isSelected && <CheckCircle2 className="h-4 w-4 shrink-0 text-blue-600" />}
+                          </button>
+                        );
+                      })}
+                    </>
+                  )}
+                </div>
+                <p className="mt-2 text-[11px] text-slate-500">The recipient can view and download this file.</p>
+                <div className="mt-5 flex justify-end gap-2">
+                  <button type="button" onClick={() => setShareTarget(null)} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600 hover:bg-slate-50">Cancel</button>
+                  <button type="submit" disabled={isSharing || loadingShareDirectory || (!selectedShareUser && !shareWithEveryone)} className="inline-flex items-center gap-2 rounded-lg bg-[#0055ff] px-3 py-2 text-xs font-bold text-white hover:bg-blue-700 disabled:opacity-60">
+                    {isSharing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Share2 className="h-4 w-4" />}
+                    Share file
+                  </button>
+                </div>
+              </form>
             </div>
           )}
 

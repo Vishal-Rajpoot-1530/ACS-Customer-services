@@ -11,6 +11,18 @@ import { explorerRepository, ExplorerState } from '../repositories/explorer.repo
 const ROOT_FOLDER_ID = 'root';
 
 export class UserService {
+  async getShareDirectory(currentUserId: string): Promise<Array<{ id: string; email: string; displayName: string; role: string }>> {
+    const users = await userRepository.findAll();
+    return users
+      .filter((user) => getUserId(user) !== currentUserId)
+      .map((user) => ({
+        id: getUserId(user),
+        email: user.email,
+        displayName: user.displayName,
+        role: user.role,
+      }));
+  }
+
   async getExplorer(userId: string): Promise<ExplorerState> {
     return explorerRepository.getByUserId(userId);
   }

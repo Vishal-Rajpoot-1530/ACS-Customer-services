@@ -19,6 +19,22 @@ export const documentIdParamSchema = z.object({
   }),
 });
 
+export const shareDocumentSchema = z.object({
+  params: z.object({
+    id: z.string().min(1, 'Document ID is required'),
+  }),
+  body: z.object({
+    email: z.string().trim().email().max(255),
+  }),
+});
+
+export const revokeDocumentShareSchema = z.object({
+  params: z.object({
+    id: z.string().min(1, 'Document ID is required'),
+    recipientId: z.string().min(1, 'Recipient ID is required'),
+  }),
+});
+
 export const updateDocumentSchema = z.object({
   params: z.object({
     id: z.string().min(1, 'Document ID is required'),

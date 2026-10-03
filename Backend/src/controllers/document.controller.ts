@@ -68,6 +68,65 @@ export class DocumentController {
     }
   }
 
+  async listShared(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const documents = await documentService.getSharedDocuments(req.user!.userId);
+      sendSuccess(res, 'Shared documents retrieved successfully', { items: documents });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async listSharedByMe(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const shares = await documentService.getDocumentsSharedByUser(req.user!.userId);
+      sendSuccess(res, 'Documents shared by you retrieved successfully', { items: shares });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async share(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const result = await documentService.shareDocument(
+        req.params.id,
+        req.user!.userId,
+        req.user!.role,
+        req.body.email
+      );
+      sendSuccess(res, 'Document shared successfully', result);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async shareWithAll(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const result = await documentService.shareDocumentWithAll(
+        req.params.id,
+        req.user!.userId,
+        req.user!.role
+      );
+      sendSuccess(res, 'Document shared with all eligible users', result);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async revokeShare(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      await documentService.revokeDocumentShare(
+        req.params.id,
+        req.params.recipientId,
+        req.user!.userId,
+        req.user!.role
+      );
+      sendSuccess(res, 'Document access revoked successfully');
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async getById(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const { id } = req.params;

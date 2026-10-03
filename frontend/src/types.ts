@@ -28,6 +28,8 @@ export interface ImportedDocument {
   downloadUrl?: string;
   s3Key?: string;
   storedName?: string;
+  sharedByName?: string;
+  sharedByEmail?: string;
 }
 
 export interface SelectedFile {

@@ -76,6 +76,22 @@ export const connectDatabase = async (): Promise<void> => {
       ) ENGINE=InnoDB;
     `);
     await pool.query(`
+      CREATE TABLE IF NOT EXISTS document_shares (
+        document_id CHAR(36) NOT NULL,
+        recipient_user_id CHAR(36) NOT NULL,
+        shared_by_user_id CHAR(36) NOT NULL,
+        created_at DATETIME NOT NULL,
+        PRIMARY KEY (document_id, recipient_user_id),
+        INDEX idx_document_shares_recipient (recipient_user_id, created_at),
+        CONSTRAINT fk_document_shares_document FOREIGN KEY (document_id)
+          REFERENCES documents(id) ON DELETE CASCADE,
+        CONSTRAINT fk_document_shares_recipient FOREIGN KEY (recipient_user_id)
+          REFERENCES users(id) ON DELETE CASCADE,
+        CONSTRAINT fk_document_shares_shared_by FOREIGN KEY (shared_by_user_id)
+          REFERENCES users(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB;
+    `);
+    await pool.query(`
       CREATE TABLE IF NOT EXISTS refresh_tokens (
         id CHAR(36) PRIMARY KEY,
         user_id CHAR(36) NOT NULL,

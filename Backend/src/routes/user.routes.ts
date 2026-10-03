@@ -8,6 +8,7 @@ const router = Router();
 
 router.use(authenticate);
 
+router.get('/share-directory', userController.getShareDirectory.bind(userController));
 router.get('/explorer', userController.getExplorer.bind(userController));
 router.put('/explorer', validateRequest(explorerStateSchema), userController.saveExplorer.bind(userController));
 

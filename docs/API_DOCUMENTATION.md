@@ -95,7 +95,13 @@
 }
 ```
 
-### 1.6 Logout
+### 1.6 Registered Users for File Sharing
+- **Method:** `GET`
+- **Route:** `/api/v1/users/share-directory`
+- **Header:** `Authorization: Bearer <accessToken>`
+- Returns registered accounts other than the current user, with `id`, `displayName`, `email`, and `role` fields.
+
+### 1.7 Logout
 - **Method:** `POST`
 - **Route:** `/api/v1/auth/logout`
 - **Header:** `Authorization: Bearer <accessToken>`
@@ -169,7 +175,39 @@
 }
 ```
 
-### 2.3 Get Document Download URL
+### 2.3 List Documents Shared With the Current User
+- **Method:** `GET`
+- **Route:** `/api/v1/documents/shared`
+- **Header:** `Authorization: Bearer <accessToken>`
+- **Response:** `{ "success": true, "data": { "items": [/* shared document metadata */] } }`
+
+### 2.4 List Documents Shared by the Current User
+- **Method:** `GET`
+- **Route:** `/api/v1/documents/shared-by-me`
+- **Header:** `Authorization: Bearer <accessToken>`
+- **Response:** Each item contains document metadata and the recipient's ID, name, email, and share date.
+
+### 2.5 Share a Document
+- **Method:** `POST`
+- **Route:** `/api/v1/documents/:id/shares`
+- **Header:** `Authorization: Bearer <accessToken>`
+- **Request Body:** `{ "email": "registered-user@example.com" }`
+- The authenticated owner can share with any registered account. Recipients can view and download, but cannot edit or delete the document.
+
+### 2.6 Share a Document with Everyone
+- **Method:** `POST`
+- **Route:** `/api/v1/documents/:id/shares/all`
+- **Header:** `Authorization: Bearer <accessToken>`
+- Shares with all eligible registered accounts in one request, including admin accounts. The sender and document owner are excluded.
+- **Response:** `{ "success": true, "data": { "sharedCount": 4 } }`
+
+### 2.7 Revoke a Share
+- **Method:** `DELETE`
+- **Route:** `/api/v1/documents/:id/shares/:recipientId`
+- **Header:** `Authorization: Bearer <accessToken>`
+- Only the document owner (or an admin) can revoke access.
+
+### 2.8 Get Document Download URL
 - **Method:** `GET`
 - **Route:** `/api/v1/documents/:id/download`
 - **Header:** `Authorization: Bearer <accessToken>`
@@ -186,7 +224,7 @@
 }
 ```
 
-### 2.4 Delete Document
+### 2.9 Delete Document
 - **Method:** `DELETE`
 - **Route:** `/api/v1/documents/:id`
 - **Header:** `Authorization: Bearer <accessToken>`

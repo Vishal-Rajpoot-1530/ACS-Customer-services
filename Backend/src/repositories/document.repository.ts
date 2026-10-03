@@ -1,4 +1,4 @@
-import { RowDataPacket } from 'mysql2';
+import { ResultSetHeader, RowDataPacket } from 'mysql2';
 import { randomUUID } from 'crypto';
 import { pool } from '../config/db.config';
 import { IDocument } from '../models/document.model';
@@ -19,6 +19,98 @@ export class DocumentRepository {
     async findById(id: string): Promise<IDocument | null> { const [rows] = await pool.query<DocumentRow[]>('SELECT * FROM documents WHERE id = ?', [id]); return rows[0] ? mapDocument(rows[0]) : null; }
     async findByUserId(userId: string, query: DocumentListQuery): Promise<PaginationResult<IDocument>> { return this.findPaged(userId, query, false); }
     async findAll(query: DocumentListQuery): Promise<PaginationResult<IDocument>> { return this.findPaged(undefined, query, true); }
+
+    async shareWith(documentId: string, recipientUserId: string, sharedByUserId: string): Promise<void> {
+        await pool.query(
+            'INSERT IGNORE INTO document_shares (document_id, recipient_user_id, shared_by_user_id, created_at) VALUES (?, ?, ?, ?)',
+            [documentId, recipientUserId, sharedByUserId, new Date()]
+        );
+    }
+
+    async shareWithAll(
+        documentId: string,
+        sharedByUserId: string,
+        documentOwnerId: string
+    ): Promise<number> {
+        const [result] = await pool.query<ResultSetHeader>(
+            `INSERT IGNORE INTO document_shares (document_id, recipient_user_id, shared_by_user_id, created_at)
+             SELECT ?, recipient.id, ?, ? FROM users recipient
+             WHERE recipient.id <> ? AND recipient.id <> ?`,
+            [documentId, sharedByUserId, new Date(), sharedByUserId, documentOwnerId]
+        );
+        return result.affectedRows;
+    }
+
+    async findSharesWithUser(userId: string): Promise<Array<{
+        document: IDocument;
+        sharedByName: string;
+        sharedByEmail: string;
+    }>> {
+        type SharedWithUserRow = DocumentRow & {
+            shared_by_name: string;
+            shared_by_email: string;
+        };
+        const [rows] = await pool.query<SharedWithUserRow[]>(
+            `SELECT d.*, sharer.display_name AS shared_by_name, sharer.email AS shared_by_email
+             FROM document_shares ds
+             INNER JOIN documents d ON d.id = ds.document_id
+             INNER JOIN users sharer ON sharer.id = ds.shared_by_user_id
+             WHERE ds.recipient_user_id = ? ORDER BY ds.created_at DESC`,
+            [userId]
+        );
+        return rows.map((row) => ({
+            document: mapDocument(row),
+            sharedByName: row.shared_by_name,
+            sharedByEmail: row.shared_by_email,
+        }));
+    }
+
+    async findSharedByUser(userId: string): Promise<Array<{
+        document: IDocument;
+        recipientId: string;
+        recipientEmail: string;
+        recipientName: string;
+        sharedAt: Date;
+    }>> {
+        type SharedByUserRow = DocumentRow & {
+            recipient_id: string;
+            recipient_email: string;
+            recipient_name: string;
+            shared_at: Date;
+        };
+        const [rows] = await pool.query<SharedByUserRow[]>(
+            `SELECT d.*, recipient.id AS recipient_id, recipient.email AS recipient_email,
+                    recipient.display_name AS recipient_name, ds.created_at AS shared_at
+             FROM document_shares ds
+             INNER JOIN documents d ON d.id = ds.document_id
+             INNER JOIN users recipient ON recipient.id = ds.recipient_user_id
+             WHERE ds.shared_by_user_id = ?
+             ORDER BY ds.created_at DESC`,
+            [userId]
+        );
+        return rows.map((row) => ({
+            document: mapDocument(row),
+            recipientId: row.recipient_id,
+            recipientEmail: row.recipient_email,
+            recipientName: row.recipient_name,
+            sharedAt: new Date(row.shared_at),
+        }));
+    }
+
+    async isSharedWithUser(documentId: string, userId: string): Promise<boolean> {
+        const [rows] = await pool.query<RowDataPacket[]>(
+            'SELECT 1 FROM document_shares WHERE document_id = ? AND recipient_user_id = ? LIMIT 1',
+            [documentId, userId]
+        );
+        return rows.length > 0;
+    }
+
+    async revokeShare(documentId: string, recipientUserId: string): Promise<void> {
+        await pool.query(
+            'DELETE FROM document_shares WHERE document_id = ? AND recipient_user_id = ?',
+            [documentId, recipientUserId]
+        );
+    }
 
     private async findPaged(userId: string | undefined, query: DocumentListQuery, admin: boolean): Promise<PaginationResult<IDocument>> {
         const page = Math.max(1, Number(query.page) || 1); const limit = Math.min(100, Math.max(1, Number(query.limit) || (admin ? 50 : 20)));

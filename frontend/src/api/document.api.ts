@@ -26,6 +26,8 @@ export interface BackendDocumentDto {
   printOptions?: PrintOptionsDto;
   createdAt: string;
   updatedAt: string;
+  sharedByName?: string;
+  sharedByEmail?: string;
 }
 
 export interface DocumentUploadMetadata {
@@ -51,6 +53,21 @@ export interface DownloadUrlResponse {
   downloadUrl: string;
   fileName: string;
   expiresIn: number;
+}
+
+export interface ShareDirectoryUserDto {
+  id: string;
+  email: string;
+  displayName: string;
+  role: 'USER' | 'ADMIN';
+}
+
+export interface SharedByMeDto {
+  document: BackendDocumentDto;
+  recipientId: string;
+  recipientEmail: string;
+  recipientName: string;
+  sharedAt: string;
 }
 
 export const documentApi = {
@@ -98,6 +115,38 @@ export const documentApi = {
     } while (page <= totalPages);
 
     return items;
+  },
+
+  async listShared(): Promise<BackendDocumentDto[]> {
+    const res = await apiClient.get<{ items: BackendDocumentDto[] }>('/documents/shared');
+    return res.data?.items || [];
+  },
+
+  async listSharedByMe(): Promise<SharedByMeDto[]> {
+    const res = await apiClient.get<{ items: SharedByMeDto[] }>('/documents/shared-by-me');
+    return res.data?.items || [];
+  },
+
+  async listShareDirectory(): Promise<ShareDirectoryUserDto[]> {
+    const res = await apiClient.get<{ users: ShareDirectoryUserDto[] }>('/users/share-directory');
+    return res.data?.users || [];
+  },
+
+  async share(id: string, email: string): Promise<{ recipientEmail: string; recipientName: string }> {
+    const res = await apiClient.post<{ recipientEmail: string; recipientName: string }>(
+      `/documents/${id}/shares`,
+      { email }
+    );
+    return res.data!;
+  },
+
+  async shareWithAll(id: string): Promise<{ sharedCount: number }> {
+    const res = await apiClient.post<{ sharedCount: number }>(`/documents/${id}/shares/all`, {});
+    return res.data!;
+  },
+
+  async revokeShare(id: string, recipientId: string): Promise<void> {
+    await apiClient.delete(`/documents/${id}/shares/${recipientId}`);
   },
 
   async getById(id: string): Promise<BackendDocumentDto> {

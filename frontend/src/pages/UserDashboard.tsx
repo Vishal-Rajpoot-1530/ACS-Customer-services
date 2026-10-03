@@ -19,14 +19,15 @@ import {
   X,
   Headphones,
   Music,
-  Folder
+  Folder,
+  Share2,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { ImportedDocument } from '../types';
 import { RealDocumentViewerModal } from '../components/RealDocumentViewerModal';
 import { UserEditDocModal } from '../components/UserEditDocModal';
 import { saveMediaBlob, deleteMediaBlob, linkMediaBlob } from '../utils/mediaStorage';
-import { documentApi } from '../api/document.api';
+import { BackendDocumentDto, documentApi, ShareDirectoryUserDto, SharedByMeDto } from '../api/document.api';
 import { FileExplorerSidebar, ExplorerFolder } from '../components/FileExplorerSidebar';
 
 type DocTypeFilter = 'all' | 'pdf' | 'images' | 'videos' | 'audio' | 'doc';
@@ -38,6 +39,17 @@ export const UserDashboard: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [documents, setDocuments] = useState<ImportedDocument[]>([]);
+  const [sharedDocuments, setSharedDocuments] = useState<ImportedDocument[]>([]);
+  const [sharedByMe, setSharedByMe] = useState<SharedByMeDto[]>([]);
+  const [activeDocumentView, setActiveDocumentView] = useState<'mine' | 'shared' | 'sharedByMe'>('mine');
+  const [shareTarget, setShareTarget] = useState<ImportedDocument | null>(null);
+  const [shareDirectory, setShareDirectory] = useState<ShareDirectoryUserDto[]>([]);
+  const [selectedShareUser, setSelectedShareUser] = useState<ShareDirectoryUserDto | null>(null);
+  const [shareWithEveryone, setShareWithEveryone] = useState(false);
+  const [shareSearch, setShareSearch] = useState('');
+  const [loadingShareDirectory, setLoadingShareDirectory] = useState(false);
+  const [shareDirectoryError, setShareDirectoryError] = useState<string | null>(null);
+  const [isSharing, setIsSharing] = useState(false);
   const explorerStorageKey = `acs-explorer-user-${user?.uid || 'guest'}`;
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
   const [folderAssignments, setFolderAssignments] = useState<Record<string, string>>({});
@@ -77,6 +89,25 @@ export const UserDashboard: React.FC = () => {
       ? docItem.importedAt
       : date.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' });
   };
+
+  const mapBackendDocument = (document: BackendDocumentDto): ImportedDocument => ({
+    id: document.id,
+    name: document.originalName,
+    size: document.size,
+    type: document.mimeType,
+    lastModified: new Date(document.createdAt).getTime(),
+    importedAt: document.importedAt || new Date(document.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    importedBy: document.importedBy || 'ACS Member',
+    userId: document.userId,
+    userEmail: document.userEmail || '',
+    status: document.status,
+    notes: document.notes || '',
+    category: document.category,
+    createdAt: document.createdAt,
+    s3Key: document.s3Key,
+    sharedByName: document.sharedByName,
+    sharedByEmail: document.sharedByEmail,
+  });
 
   // Helper to categorize document types into 'pdf' | 'images' | 'videos' | 'audio' | 'doc' | 'other'
   const getDocTypeCategory = (docItem: ImportedDocument): 'pdf' | 'images' | 'videos' | 'audio' | 'doc' | 'other' => {
@@ -137,24 +168,14 @@ export const UserDashboard: React.FC = () => {
   const fetchDocuments = async () => {
     setLoadingDocs(true);
     try {
-      const items = await documentApi.listAll();
-      const mapped: ImportedDocument[] = items.map((b) => ({
-        id: b.id,
-        name: b.originalName,
-        size: b.size,
-        type: b.mimeType,
-        lastModified: new Date(b.createdAt).getTime(),
-        importedAt: b.importedAt || new Date(b.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        importedBy: b.importedBy || user?.displayName || 'ACS Member',
-        userId: b.userId || user?.uid,
-        userEmail: b.userEmail || user?.email || '',
-        status: b.status,
-        notes: b.notes || '',
-        category: b.category,
-        createdAt: b.createdAt,
-        s3Key: b.s3Key,
-      }));
-      setDocuments(mapped);
+      const [items, sharedItems, outgoingShares] = await Promise.all([
+        documentApi.listAll(),
+        documentApi.listShared(),
+        documentApi.listSharedByMe(),
+      ]);
+      setDocuments(items.map(mapBackendDocument));
+      setSharedDocuments(sharedItems.map(mapBackendDocument));
+      setSharedByMe(outgoingShares);
       setLoadingDocs(false);
       return;
     } catch (err: any) {
@@ -299,18 +320,14 @@ export const UserDashboard: React.FC = () => {
 
   // Delete Document handler
   const handleDeleteDoc = async (id: string) => {
-    // 1. Instantly update React state so document disappears immediately
-    const updated = documents.filter((d) => d.id !== id);
-    setDocuments(updated);
-
-    // Call Backend API to delete
     try {
       await documentApi.delete(id);
-    } catch (err) {
-      console.warn('Backend delete error notice:', err);
+    } catch (err: any) {
+      setUploadNotice(err?.message || 'Unable to delete this document.');
+      return;
     }
 
-    // 2. Clear from localStorage and broadcast update to all tabs/components
+    setDocuments((current) => current.filter((document) => document.id !== id));
     try {
       window.dispatchEvent(new Event('acs_documents_updated'));
     } catch (err) {
@@ -359,22 +376,84 @@ export const UserDashboard: React.FC = () => {
     setIsEditModalOpen(true);
   };
 
+  const handleShareDocument = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!shareTarget || (!selectedShareUser && !shareWithEveryone)) return;
+
+    setIsSharing(true);
+    try {
+      if (shareWithEveryone) {
+        const result = await documentApi.shareWithAll(shareTarget.id);
+        setUploadNotice(result.sharedCount
+          ? `Shared "${shareTarget.name}" with ${result.sharedCount} registered user(s), including admins.`
+          : `"${shareTarget.name}" is already shared with all eligible users.`);
+      } else if (selectedShareUser) {
+        const result = await documentApi.share(shareTarget.id, selectedShareUser.email);
+        setUploadNotice(`Shared "${shareTarget.name}" with ${result.recipientEmail}.`);
+      }
+      void fetchDocuments();
+      setShareTarget(null);
+      setSelectedShareUser(null);
+      setShareWithEveryone(false);
+      setShareSearch('');
+    } catch (error: any) {
+      setUploadNotice(error?.message || 'Unable to share this file.');
+    } finally {
+      setIsSharing(false);
+    }
+  };
+
+  const openShareDialog = async (document: ImportedDocument) => {
+    setShareTarget(document);
+    setSelectedShareUser(null);
+    setShareWithEveryone(false);
+    setShareSearch('');
+    setShareDirectoryError(null);
+    setLoadingShareDirectory(true);
+    try {
+      const users = await documentApi.listShareDirectory();
+      setShareDirectory(users.filter((shareUser) => shareUser.id !== document.userId));
+    } catch (error: any) {
+      setShareDirectoryError(error?.message || 'Unable to load registered users.');
+      setShareDirectory([]);
+    } finally {
+      setLoadingShareDirectory(false);
+    }
+  };
+
+  const filteredShareDirectory = shareDirectory.filter((shareUser) =>
+    `${shareUser.displayName} ${shareUser.email}`.toLowerCase().includes(shareSearch.trim().toLowerCase())
+  );
+
+  const handleRevokeShare = async (share: SharedByMeDto) => {
+    try {
+      await documentApi.revokeShare(share.document.id, share.recipientId);
+      setUploadNotice(`Access to "${share.document.originalName}" revoked for ${share.recipientEmail}.`);
+      void fetchDocuments();
+    } catch (error: any) {
+      setUploadNotice(error?.message || 'Unable to revoke shared access.');
+    }
+  };
+
   const handleSignOut = async () => {
     await logout();
     navigate('/');
   };
 
   // Base Scoped Documents (Time filter applied)
+  const activeDocuments = activeDocumentView === 'mine' ? documents : sharedDocuments;
+
   const baseScopedDocs = React.useMemo(() => {
-    return documents.filter((docItem) => {
+    return activeDocuments.filter((docItem) => {
       if (timeFilter === '2days') {
         if (!isWithinLast2Days(docItem)) return false;
       }
       return true;
     });
-  }, [documents, timeFilter]);
+  }, [activeDocuments, timeFilter]);
 
   const folderScopedDocs = React.useMemo(() => {
+    if (activeDocumentView !== 'mine') return baseScopedDocs;
     if (!selectedFolderId) return baseScopedDocs;
     const currentUserId = user?.uid?.trim();
     const currentUserEmail = user?.email?.toLowerCase().trim();
@@ -385,7 +464,7 @@ export const UserDashboard: React.FC = () => {
       );
       return folderAssignments[docItem.id] === selectedFolderId && belongsToCurrentUser;
     });
-  }, [baseScopedDocs, folderAssignments, selectedFolderId, user?.uid, user?.email]);
+  }, [activeDocumentView, baseScopedDocs, folderAssignments, selectedFolderId, user?.uid, user?.email]);
 
   // Counts for each Document Type Filter within the current base scope
   const allTypeCount = folderScopedDocs.length;
@@ -414,7 +493,9 @@ export const UserDashboard: React.FC = () => {
     return path.join(' / ') || null;
   }, [explorerFolders, selectedFolderId]);
 
-  const userSectionTitle = selectedFolderPath
+  const userSectionTitle = activeDocumentView === 'shared'
+    ? 'Shared with me'
+    : selectedFolderPath
     ? `${selectedFolderPath} · ${timeFilter === 'all' ? 'All Time' : 'Recent'} Uploads`
     : timeFilter === 'all'
       ? 'All Time Uploaded by You'
@@ -500,7 +581,163 @@ export const UserDashboard: React.FC = () => {
             </div>
           )}
 
-          {/* ================= RECENTLY UPLOADED DOCUMENTS SECTION ================= */}
+          {shareTarget && (
+            <div className="fixed inset-0 z-[200] flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm" onClick={() => setShareTarget(null)}>
+              <form
+                onSubmit={handleShareDocument}
+                onClick={(event) => event.stopPropagation()}
+                className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-5 shadow-2xl"
+              >
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <h2 className="text-base font-extrabold text-[#04193d]">Share file</h2>
+                    <p className="mt-1 break-all text-xs text-slate-500">{shareTarget.name}</p>
+                  </div>
+                  <button type="button" onClick={() => setShareTarget(null)} className="rounded-md p-1 text-slate-500 hover:bg-slate-100" aria-label="Close share dialog">
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+                <label htmlFor="share-user-search" className="mt-5 block text-xs font-bold text-slate-700">Registered users</label>
+                <input
+                  id="share-user-search"
+                  type="search"
+                  value={shareSearch}
+                  onChange={(event) => setShareSearch(event.target.value)}
+                  placeholder="Search by name or email"
+                  className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2.5 text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                />
+                <div className="mt-2 max-h-64 min-h-24 overflow-y-auto overscroll-contain rounded-lg border border-slate-200" role="listbox" aria-label="Registered users">
+                  {loadingShareDirectory ? (
+                    <div className="flex h-24 items-center justify-center gap-2 text-xs text-slate-500">
+                      <Loader2 className="h-4 w-4 animate-spin" /> Loading users...
+                    </div>
+                  ) : shareDirectoryError ? (
+                    <p className="p-4 text-center text-xs text-rose-600">{shareDirectoryError}</p>
+                  ) : (
+                    <>
+                      {shareDirectory.length > 0 && (
+                        <button
+                          type="button"
+                          role="option"
+                          aria-selected={shareWithEveryone}
+                          onClick={() => {
+                            setShareWithEveryone(true);
+                            setSelectedShareUser(null);
+                          }}
+                          className={`flex w-full items-center gap-3 border-b border-slate-200 px-3 py-3 text-left ${shareWithEveryone ? 'bg-emerald-50' : 'bg-slate-50/70 hover:bg-emerald-50/60'}`}
+                        >
+                          <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-bold ${shareWithEveryone ? 'bg-emerald-600 text-white' : 'bg-emerald-100 text-emerald-700'}`}>
+                            <Users className="h-4 w-4" />
+                          </span>
+                          <span className="min-w-0 flex-1">
+                            <span className="block text-xs font-extrabold text-slate-800">Share with everyone</span>
+                            <span className="block text-[11px] text-slate-500">{shareDirectory.length} registered users, including admins</span>
+                          </span>
+                          {shareWithEveryone && <Check className="h-4 w-4 shrink-0 text-emerald-700" />}
+                        </button>
+                      )}
+                      {filteredShareDirectory.length === 0 ? (
+                        <p className="p-4 text-center text-xs text-slate-500">
+                          {shareDirectory.length ? 'No users match your search.' : 'No other eligible users found.'}
+                        </p>
+                      ) : filteredShareDirectory.map((shareUser) => {
+                        const isSelected = selectedShareUser?.id === shareUser.id;
+                        return (
+                          <button
+                            key={shareUser.id}
+                            type="button"
+                            role="option"
+                            aria-selected={isSelected}
+                            onClick={() => {
+                              setSelectedShareUser(shareUser);
+                              setShareWithEveryone(false);
+                            }}
+                            className={`flex w-full items-center gap-3 border-b border-slate-100 px-3 py-2.5 text-left last:border-b-0 ${isSelected ? 'bg-blue-50' : 'hover:bg-slate-50'}`}
+                          >
+                            <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-bold ${isSelected ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600'}`}>
+                              {(shareUser.displayName || shareUser.email).slice(0, 1).toUpperCase()}
+                            </span>
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate text-xs font-bold text-slate-800">{shareUser.displayName}</span>
+                              <span className="flex items-center gap-1.5">
+                                <span className="block truncate text-[11px] text-slate-500">{shareUser.email}</span>
+                                {shareUser.role === 'ADMIN' && <span className="shrink-0 rounded bg-amber-100 px-1.5 py-0.5 text-[9px] font-extrabold uppercase text-amber-800">Admin</span>}
+                              </span>
+                            </span>
+                            {isSelected && <Check className="h-4 w-4 shrink-0 text-blue-600" />}
+                          </button>
+                        );
+                      })}
+                    </>
+                  )}
+                </div>
+                <p className="mt-2 text-[11px] text-slate-500">They can view and download the file. Only you can edit or delete it.</p>
+                <div className="mt-5 flex justify-end gap-2">
+                  <button type="button" onClick={() => setShareTarget(null)} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600 hover:bg-slate-50">Cancel</button>
+                  <button type="submit" disabled={isSharing || loadingShareDirectory || (!selectedShareUser && !shareWithEveryone)} className="inline-flex items-center gap-2 rounded-lg bg-[#0055ff] px-3 py-2 text-xs font-bold text-white hover:bg-blue-700 disabled:opacity-60">
+                    {isSharing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Share2 className="h-4 w-4" />}
+                    Share file
+                  </button>
+                </div>
+              </form>
+            </div>
+          )}
+
+          {/* ================= FILE VIEWS ================= */}
+          <div className="mb-4 flex gap-1 overflow-x-auto border-b border-slate-200" role="tablist" aria-label="Document views">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeDocumentView === 'mine'}
+              onClick={() => setActiveDocumentView('mine')}
+              className={`border-b-2 px-3 py-2 text-xs font-bold transition-colors ${activeDocumentView === 'mine' ? 'border-[#0055ff] text-[#0055ff]' : 'border-transparent text-slate-500 hover:text-slate-800'}`}
+            >
+              My files <span className="ml-1 text-[10px]">{documents.length}</span>
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeDocumentView === 'shared'}
+              onClick={() => {
+                setActiveDocumentView('shared');
+                setSelectedFolderId(null);
+              }}
+              className={`border-b-2 px-3 py-2 text-xs font-bold transition-colors ${activeDocumentView === 'shared' ? 'border-emerald-600 text-emerald-700' : 'border-transparent text-slate-500 hover:text-slate-800'}`}
+            >
+              Shared with me <span className="ml-1 text-[10px]">{sharedDocuments.length}</span>
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeDocumentView === 'sharedByMe'}
+              onClick={() => setActiveDocumentView('sharedByMe')}
+              className={`shrink-0 border-b-2 px-3 py-2 text-xs font-bold transition-colors ${activeDocumentView === 'sharedByMe' ? 'border-orange-600 text-orange-700' : 'border-transparent text-slate-500 hover:text-slate-800'}`}
+            >
+              Shared by me <span className="ml-1 text-[10px]">{sharedByMe.length}</span>
+            </button>
+          </div>
+          {activeDocumentView === 'sharedByMe' ? (
+            <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white" aria-label="Files shared by me">
+              <div className="border-b border-slate-100 bg-slate-50/60 px-4 py-4">
+                <h2 className="text-sm font-extrabold text-[#04193d]">Shared by me <span className="ml-1 text-xs text-slate-400">{sharedByMe.length}</span></h2>
+              </div>
+              {sharedByMe.length ? (
+                <div className="divide-y divide-slate-100">
+                  {sharedByMe.map((share) => (
+                    <div key={`${share.document.id}-${share.recipientId}`} className="flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+                      <button type="button" onClick={() => handleOpenDocDetails(mapBackendDocument(share.document))} className="min-w-0 text-left">
+                        <span className="block truncate text-xs font-bold text-[#04193d]">{share.document.originalName}</span>
+                        <span className="mt-0.5 block truncate text-[11px] text-slate-500">With: {share.recipientEmail}</span>
+                      </button>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <button type="button" onClick={() => void handleRevokeShare(share)} className="rounded-md border border-rose-200 px-2.5 py-1.5 text-[11px] font-bold text-rose-600 hover:bg-rose-50">Revoke</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : <p className="px-4 py-12 text-center text-xs text-slate-500">You have not shared any files yet.</p>}
+            </section>
+          ) : (
           <div className="bg-white rounded-3xl border border-slate-200/80 shadow-xs overflow-hidden">
             {/* Section Header with Time Filter & File Type Filters */}
             <div className="p-4 sm:p-5 border-b border-slate-100 flex flex-col xl:flex-row xl:items-center justify-between gap-4 bg-slate-50/50">
@@ -653,7 +890,12 @@ export const UserDashboard: React.FC = () => {
                 <Loader2 className="w-6 h-6 animate-spin text-[#0055ff]" />
                 <span>Loading your documents from the server...</span>
               </div>
-            ) : documents.length === 0 ? (
+            ) : activeDocuments.length === 0 && activeDocumentView === 'shared' ? (
+              <div className="px-4 py-14 text-center">
+                <Share2 className="mx-auto h-8 w-8 text-slate-300" />
+                <p className="mt-3 text-sm font-bold text-slate-700">No files have been shared with you yet.</p>
+              </div>
+            ) : activeDocuments.length === 0 ? (
               /* Empty State when User has 0 uploaded documents at all: Interactive Ping Dropzone */
               <div className="py-12 sm:py-16 px-4 flex flex-col items-center justify-center">
                 <div
@@ -820,15 +1062,21 @@ export const UserDashboard: React.FC = () => {
                           </div>
 
                           <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] sm:text-[11px] text-slate-500 mt-1">
-                            <span className="font-mono text-slate-600">ID: {docItem.id.slice(-8)}</span>
-                            <span>•</span>
-                            <span>{formatUploadDate(docItem)}</span>
-                            <span>•</span>
-                            <span className="text-[#ff6600] font-semibold">{docItem.category || 'Print Job'}</span>
-                            {docItem.notes && (
+                            {activeDocumentView === 'shared' ? (
+                              <span>By: {docItem.sharedByEmail || docItem.userEmail}</span>
+                            ) : (
                               <>
+                                <span className="font-mono text-slate-600">ID: {docItem.id.slice(-8)}</span>
                                 <span>•</span>
-                                <span className="text-slate-600 italic truncate max-w-[150px] sm:max-w-[200px]">Note: {docItem.notes}</span>
+                                <span>{formatUploadDate(docItem)}</span>
+                                <span>•</span>
+                                <span className="text-[#ff6600] font-semibold">{docItem.category || 'Print Job'}</span>
+                                {docItem.notes && (
+                                  <>
+                                    <span>•</span>
+                                    <span className="text-slate-600 italic truncate max-w-[150px] sm:max-w-[200px]">Note: {docItem.notes}</span>
+                                  </>
+                                )}
                               </>
                             )}
                           </div>
@@ -867,17 +1115,45 @@ export const UserDashboard: React.FC = () => {
                           </button>
                         )}
 
-                        {/* 2. Edit Button */}
-                        <button
-                          id={`user-edit-doc-${docItem.id}`}
-                          onClick={() => handleOpenEditModal(docItem)}
-                          className="inline-flex items-center space-x-1.5 px-3 py-1.5 text-xs font-bold text-slate-700 hover:text-[#0055ff] bg-white hover:bg-slate-50 rounded-xl border border-slate-200 hover:border-blue-200 transition-colors cursor-pointer shadow-2xs min-h-[34px]"
-                          title="Edit document details"
-                          aria-label="Edit document"
-                        >
-                          <Edit3 className="w-3.5 h-3.5 text-slate-500 group-hover:text-[#0055ff]" />
-                          <span>Edit</span>
-                        </button>
+                        {activeDocumentView === 'mine' && (
+                          <>
+                            <button
+                              id={`user-share-doc-${docItem.id}`}
+                              onClick={() => openShareDialog(docItem)}
+                              className="inline-flex min-h-[34px] items-center space-x-1.5 rounded-xl border border-emerald-200 bg-white px-3 py-1.5 text-xs font-bold text-emerald-700 shadow-2xs transition-colors hover:bg-emerald-50"
+                              title="Share with a registered user"
+                              aria-label="Share document"
+                            >
+                              <Share2 className="h-3.5 w-3.5" />
+                              <span>Share</span>
+                            </button>
+                            <button
+                              id={`user-edit-doc-${docItem.id}`}
+                              onClick={() => handleOpenEditModal(docItem)}
+                              className="inline-flex items-center space-x-1.5 px-3 py-1.5 text-xs font-bold text-slate-700 hover:text-[#0055ff] bg-white hover:bg-slate-50 rounded-xl border border-slate-200 hover:border-blue-200 transition-colors cursor-pointer shadow-2xs min-h-[34px]"
+                              title="Edit document details"
+                              aria-label="Edit document"
+                            >
+                              <Edit3 className="w-3.5 h-3.5 text-slate-500 group-hover:text-[#0055ff]" />
+                              <span>Edit</span>
+                            </button>
+                            <button
+                              id={`user-delete-doc-${docItem.id}`}
+                              type="button"
+                              onClick={() => {
+                                if (window.confirm(`Delete "${docItem.name}"? This cannot be undone.`)) {
+                                  void handleDeleteDoc(docItem.id);
+                                }
+                              }}
+                              className="inline-flex min-h-[34px] items-center space-x-1.5 rounded-xl border border-rose-200 bg-white px-3 py-1.5 text-xs font-bold text-rose-600 shadow-2xs transition-colors hover:bg-rose-50"
+                              title="Delete your file"
+                              aria-label="Delete document"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                              <span>Delete</span>
+                            </button>
+                          </>
+                        )}
 
                       </div>
                     </div>
@@ -886,6 +1162,7 @@ export const UserDashboard: React.FC = () => {
               </div>
             )}
           </div>
+          )}
 
         </div>
 

@@ -1,5 +1,6 @@
 import path from 'path';
 import { documentRepository } from '../repositories/document.repository';
+import { userRepository } from '../repositories/user.repository';
 import { s3Service } from './s3.service';
 import {
   buildS3ObjectKey,
@@ -104,6 +105,98 @@ export class DocumentService {
     };
   }
 
+  async getSharedDocuments(userId: string): Promise<Array<DocumentResponse & {
+    sharedByName: string;
+    sharedByEmail: string;
+  }>> {
+    const shares = await documentRepository.findSharesWithUser(userId);
+    return shares.map((share) => ({
+      ...this.formatDocumentResponse(share.document),
+      sharedByName: share.sharedByName,
+      sharedByEmail: share.sharedByEmail,
+    }));
+  }
+
+  async getDocumentsSharedByUser(userId: string): Promise<Array<{
+    document: DocumentResponse;
+    recipientId: string;
+    recipientEmail: string;
+    recipientName: string;
+    sharedAt: Date;
+  }>> {
+    const shares = await documentRepository.findSharedByUser(userId);
+    return shares.map((share) => ({
+      document: this.formatDocumentResponse(share.document),
+      recipientId: share.recipientId,
+      recipientEmail: share.recipientEmail,
+      recipientName: share.recipientName,
+      sharedAt: share.sharedAt,
+    }));
+  }
+
+  async shareDocument(
+    id: string,
+    ownerId: string,
+    userRole: UserRole,
+    recipientEmail: string
+  ): Promise<{ recipientEmail: string; recipientName: string }> {
+    const doc = await documentRepository.findById(id);
+    if (!doc) {
+      throw new AppError('Document not found', HttpStatusCodes.NOT_FOUND, 'DOCUMENT_NOT_FOUND');
+    }
+    if (userRole !== UserRoles.ADMIN && doc.userId.toString() !== ownerId) {
+      throw new AppError('Only the document owner can share this document', HttpStatusCodes.FORBIDDEN, 'FORBIDDEN');
+    }
+
+    const recipient = await userRepository.findByEmail(recipientEmail);
+    if (!recipient) {
+      throw new AppError('No registered user was found with that email', HttpStatusCodes.NOT_FOUND, 'USER_NOT_FOUND');
+    }
+    if (recipient.id.toString() === doc.userId.toString()) {
+      throw new AppError('You already own this document', HttpStatusCodes.BAD_REQUEST, 'INVALID_SHARE_RECIPIENT');
+    }
+
+    await documentRepository.shareWith(id, recipient.id.toString(), ownerId);
+    return { recipientEmail: recipient.email, recipientName: recipient.displayName };
+  }
+
+  async shareDocumentWithAll(
+    id: string,
+    sharedByUserId: string,
+    userRole: UserRole
+  ): Promise<{ sharedCount: number }> {
+    const doc = await documentRepository.findById(id);
+    if (!doc) {
+      throw new AppError('Document not found', HttpStatusCodes.NOT_FOUND, 'DOCUMENT_NOT_FOUND');
+    }
+    if (userRole !== UserRoles.ADMIN && doc.userId.toString() !== sharedByUserId) {
+      throw new AppError('Only the document owner can share this document', HttpStatusCodes.FORBIDDEN, 'FORBIDDEN');
+    }
+
+    const sharedCount = await documentRepository.shareWithAll(
+      id,
+      sharedByUserId,
+      doc.userId.toString()
+    );
+    return { sharedCount };
+  }
+
+  async revokeDocumentShare(
+    id: string,
+    recipientId: string,
+    ownerId: string,
+    userRole: UserRole
+  ): Promise<void> {
+    const doc = await documentRepository.findById(id);
+    if (!doc) {
+      throw new AppError('Document not found', HttpStatusCodes.NOT_FOUND, 'DOCUMENT_NOT_FOUND');
+    }
+    if (userRole !== UserRoles.ADMIN && doc.userId.toString() !== ownerId) {
+      throw new AppError('Only the document owner can manage sharing', HttpStatusCodes.FORBIDDEN, 'FORBIDDEN');
+    }
+    await documentRepository.revokeShare(id, recipientId);
+  }
+
   async getDocumentById(
     id: string,
     userId: string,
@@ -114,7 +207,11 @@ export class DocumentService {
       throw new AppError('Document not found', HttpStatusCodes.NOT_FOUND, 'DOCUMENT_NOT_FOUND');
     }
 
-    if (userRole !== UserRoles.ADMIN && doc.userId.toString() !== userId) {
+    if (
+      userRole !== UserRoles.ADMIN &&
+      doc.userId.toString() !== userId &&
+      !(await documentRepository.isSharedWithUser(id, userId))
+    ) {
       throw new AppError('Unauthorized to access this document', HttpStatusCodes.FORBIDDEN, 'FORBIDDEN');
     }
 
@@ -131,7 +228,11 @@ export class DocumentService {
       throw new AppError('Document not found', HttpStatusCodes.NOT_FOUND, 'DOCUMENT_NOT_FOUND');
     }
 
-    if (userRole !== UserRoles.ADMIN && doc.userId.toString() !== userId) {
+    if (
+      userRole !== UserRoles.ADMIN &&
+      doc.userId.toString() !== userId &&
+      !(await documentRepository.isSharedWithUser(id, userId))
+    ) {
       throw new AppError('Unauthorized to download this document', HttpStatusCodes.FORBIDDEN, 'FORBIDDEN');
     }
 
